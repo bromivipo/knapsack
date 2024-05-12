@@ -3,6 +3,7 @@
 #include <iostream>
 #include <ctime>
 #include <algorithm>
+#include <cmath>
 #include "ndim_branch_and_bound.cpp"
 
 
@@ -14,10 +15,10 @@ public:
     WeightPrice Add(const WeightPrice& one, const WeightPrice& other) const{
         std::vector<int> tmp = one.weight;
         double tmp_price = one.price + other.price;
-        for (int i = 0; i < one.weight.size(); ++i) {
+        for (int i = 1; i < one.weight.size(); ++i) {
             tmp[i] += other.weight[i];
             // std::cout << tmp_price << " " <<  (max_weights_[i] - tmp[i]) << std::endl;
-            tmp_price += lambdas_[i] * (max_weights_[i] - tmp[i]);
+            // tmp_price += lambdas_[i] * (max_weights_[i] - tmp[i]);
         }
         return {tmp_price, tmp};
     }
@@ -26,16 +27,24 @@ public:
         max_weights_ = max_w;
         max_weight_ = max_w[0];
         input_ = input;
-        cur_possible_sets_ = {{0, std::vector<int>(max_w.size(), 0)}};
         lambdas_ = lambdas;
+        for (int i = 0; i < input_.size(); ++i) {
+            for (int j = 1; j < input_[i].weight.size(); ++j) {
+                input_[i].price += lambdas_[j] * input_[i].weight[j];
+            }
+        }
+        std::pair<WeightPrice, std::vector<int>> tmp = {{0, std::vector<int>(max_w.size(), 0)}, std::vector<int>()};
+        cur_possible_sets_ = {tmp};
     }
 
-    WeightPrice Solve() {
+    std::pair<WeightPrice, std::vector<int>> Solve() {
         for (int i = 0; i < input_.size(); ++i) {
-            std::set<WeightPrice> new_possible_sets;
+            std::set<std::pair<WeightPrice, std::vector<int>>> new_possible_sets;
             for (const auto& state: cur_possible_sets_) {
-                if (state.weight[0] + input_[i].weight[0] <= max_weight_) {
-                    new_possible_sets.insert(Add(state, input_[i]));
+                if (state.first.weight[0] + input_[i].weight[0] <= max_weight_) {
+                    auto tmp = state.second;
+                    tmp.push_back(i);
+                    new_possible_sets.insert({Add(state.first, input_[i]), tmp});
                 }
             }
             MergeLists(new_possible_sets);
@@ -43,11 +52,11 @@ public:
         return *--cur_possible_sets_.end();
     }
 
-    void MergeLists(std::set<WeightPrice>& new_possible_sets) {
-        std::set<WeightPrice> merged;
+    void MergeLists(std::set<std::pair<WeightPrice, std::vector<int>>>& new_possible_sets) {
+        std::set<std::pair<WeightPrice, std::vector<int>>> merged;
         auto first_ind = new_possible_sets.begin();
         auto second_ind = cur_possible_sets_.begin();
-        std::vector<std::set<WeightPrice>::iterator> ind = {first_ind, second_ind};
+        std::vector<std::set<std::pair<WeightPrice, std::vector<int>>>::iterator> ind = {first_ind, second_ind};
         int picked = 0;
         if (*first_ind < *second_ind) {
             picked = 0;
@@ -62,8 +71,8 @@ public:
             } else {
                 picked = 1;
             }
-            if ((--merged.end())->price < ind[picked]->price) {
-                if ((--merged.end())->weight[0] >= ind[picked]->weight[0]) {
+            if ((--merged.end())->first.price < ind[picked]->first.price) {
+                if ((--merged.end())->first.weight[0] >= ind[picked]->first.weight[0]) {
                     merged.erase((--merged.end()));
                 }
                 merged.insert(*ind[picked]);
@@ -75,7 +84,7 @@ public:
 
 private:
     std::vector<WeightPrice> input_;
-    std::set<WeightPrice> cur_possible_sets_;
+    std::set<std::pair<WeightPrice, std::vector<int>>> cur_possible_sets_;
     std::vector<int> max_weights_;
     int max_weight_ = 0;
     std::vector<double> lambdas_;
@@ -127,7 +136,8 @@ public:
         if (cur_price_weight_.price > best_price_) {
             best_price_ = cur_price_weight_.price;
             best_pick_ = cur_picked_;
-        }   
+        }
+        std::cout << SolveLagrange(node - 1) + cur_price_weight_.price << " " << best_price_ << std::endl;
         if (best_price_ == cur_price_weight_.price || SolveLagrange(node - 1) + cur_price_weight_.price > best_price_) {
             // std::cout << "NO BLOCK" << std::endl;
             Dfs(node - 1, true);
@@ -142,6 +152,20 @@ public:
         }
     }
 
+    double LagrangianObj(const std::vector<int>& x, double price, const std::vector<double>& lambdas) {
+        double tmp = price;
+        std::vector<int> subgrad = max_weight_;
+        for (auto elem : x) {
+            for (int i = 1; i < max_weight_.size(); ++i) {
+                subgrad[i] = input_[elem].weight[i];
+            }
+        }
+        for (int i = 1; i < lambdas.size(); ++i) {
+            tmp += lambdas[i] * subgrad[i];
+        }
+        return tmp;
+    }
+
     double SolveLagrange(int nodes_left) {
         OneDimensionalKnapsack relax;
         auto tmp = max_weight_;
@@ -149,18 +173,39 @@ public:
             tmp[i] -= cur_price_weight_.weight[i];
         }
         auto lambdas = std::vector<double>(max_weight_.size(), 1);
-        double ans;
-        // for (int i = 0; i < 5; ++i) {
+        std::pair<WeightPrice, std::vector<int>> ans;
+        double last_ans = 0;
+        double ret = 0;
+        std::cout << "NEW";
+        for (int i = 0; i < 10; ++i) {
             relax.Init(tmp, std::vector<WeightPrice>(input_.begin(), input_.begin() + nodes_left + 1), lambdas);
-            ans = relax.Solve().price;
-            // Descent(lambdas);
-        // }
-        return ans;
+            ans = relax.Solve();
+            if (std::abs(ans.first.price - last_ans) < 0.1) {
+                break;
+            }
+            ret = LagrangianObj(ans.second, ans.first.price, lambdas);
+            Descent(lambdas, ans.second);
+        }
+        return ret;
     }
 
-    // void Descent(std::vector<double>& lambdas) {
-    // TODO
-    // }
+    void Descent(std::vector<double>& lambdas, const std::vector<int>& indices) {
+        std::vector<int> subgrad = max_weight_;
+        subgrad[0] = 0;
+        for (auto elem : indices) {
+            for (int i = 1; i < max_weight_.size(); ++i) {
+                subgrad[i] -= input_[elem].weight[i];
+            }
+        }
+        double norm = 0;
+        for (auto a : subgrad) {
+            norm += a * a;
+        }
+        for (int i = 1; i < lambdas.size(); ++i) {
+            lambdas[i] -= 1.0/std::sqrt(norm) * subgrad[i];
+            lambdas[i] = std::max<double>(0, lambdas[i]);
+        } 
+    }
 
 int n = 0;
 private:
@@ -201,9 +246,9 @@ std::vector<int> GenerateWeight(int ndim, int mod) {
 }
 
 int main() {
-    int iterations = 20;
+    int iterations = 1;
     int ndim = 20;
-    int n_items = 25;
+    int n_items = 10;
     std::vector<double> timers_lag(iterations);
     // std::vector<double> timers_dp(iterations);
 
